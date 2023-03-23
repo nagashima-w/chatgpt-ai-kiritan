@@ -1,8 +1,13 @@
+import os
 import openai
 import requests
-import pyaudio
+from google.cloud import speech_v1p1beta1 as speech
 from natto import MeCab
-import config
+from flask import Flask, request, jsonify
+from io import BytesIO
+from voicevox_engine_wrapper import text_to_speech
+
+app = Flask(__name__)
 
 nm = MeCab()
 emotion_dict = {}
@@ -17,6 +22,43 @@ def estimate_emotion_japanese(text):
     scores = [emotion_dict.get(token.surface, 0) for token in tokens if not token.is_eos()]
     avg_score = sum(scores) / len(scores) if scores else 0
     return "positive" if avg_score > 0 else "negative"
+
+# Google Cloud Speech-to-Text API クライアントのインスタンスを作成
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.environ.get("GCLOUD_KEY_PATH")
+client = speech.SpeechClient()
+
+# OpenAI APIキーを設定
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    audio_data = request.files['audio']
+
+    # 音声データをテキストに変換
+    text = audio_to_text(client, audio_data)
+
+    # テキストをChatGPTに入力し、返答を取得
+    response_text = chat_with_gpt(text)
+
+    # 返答の感情を推定
+    emotion = estimate_emotion_japanese(response_text)
+
+    # 返答テキストを音声に変換し、感情を反映させる
+    audio_response = text_to_speech(response_text, emotion)
+
+    return jsonify({'audio': audio_response})
+
+def audio_to_text(client, audio_data):
+    audio = speech.RecognitionAudio(content=audio_data.read())
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="ja-JP",
+    )
+
+    response = client.recognize(config=config, audio=audio)
+    transcript = response.results[0].alternatives[0].transcript
+    return transcript
 
 def chat_with_gpt(text):
     model_engine = "text-davinci-002"
@@ -34,55 +76,6 @@ def chat_with_gpt(text):
     response_text = response.choices[0].text.strip()
     return response_text
 
-def text_to_speech(text):
-    emotion = estimate_emotion_japanese(text)
-
-    speed_scale = 1.0
-    pitch_scale = 0.0
-    intonation_scale = 1.0
-
-    if emotion == "positive":
-        speed_scale = 1.2
-        pitch_scale = 0.5
-        intonation_scale = 1.2
-    elif emotion == "negative":
-        speed_scale = 0.9
-        pitch_scale = -0.5
-        intonation_scale = 0.8
-
-    response = requests.post(
-        f"{config.VOICEVOX_API_URL}/audio_query",
-        json={
-            "text": text,
-            "speaker": config.SPEAKER_ID,
-            "speedScale": speed_scale,
-            "pitchScale": pitch_scale,
-            "intonationScale": intonation_scale,
-            "volumeScale": 1.0,
-        },
-    )
-
-    audio_query = response.json()
-    response = requests.post(f"{config.VOICEVOX_API_URL}/synthesis", json=audio_query)
-    audio_data = response.content
-
-    audio = pyaudio.PyAudio()
-    stream = audio.open(
-        format=audio.get_format_from_width(2),
-        channels=1,
-        rate=24000,
-        output=True,
-    )
-
-    stream.write(audio_data)
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-
 if __name__ == "__main__":
-    while True:
-        text = input("あなた: ")
-        response_text = chat_with_gpt(text)
-        print("ChatGPT:", response_text)
-        text_to_speech(response_text)
+    app.run(host="0.0.0.0", port=8000)
+
