@@ -1,13 +1,22 @@
 import openai
 import requests
 import pyaudio
-from textblob import TextBlob
+from natto import MeCab
 import config
 
-def estimate_emotion(text):
-    blob = TextBlob(text)
-    polarity = blob.sentiment.polarity
-    return "positive" if polarity > 0 else "negative"
+nm = MeCab()
+emotion_dict = {}
+
+with open("pn.csv.m3.120408.trim", "r", encoding="utf-8") as f:
+    for line in f:
+        word, pos, score = line.strip().split("\t")
+        emotion_dict[word] = float(score)
+
+def estimate_emotion_japanese(text):
+    tokens = nm.parse(text, as_nodes=True)
+    scores = [emotion_dict.get(token.surface, 0) for token in tokens if not token.is_eos()]
+    avg_score = sum(scores) / len(scores) if scores else 0
+    return "positive" if avg_score > 0 else "negative"
 
 def chat_with_gpt(text):
     model_engine = "text-davinci-002"
@@ -26,7 +35,7 @@ def chat_with_gpt(text):
     return response_text
 
 def text_to_speech(text):
-    emotion = estimate_emotion(text)
+    emotion = estimate_emotion_japanese(text)
 
     speed_scale = 1.0
     pitch_scale = 0.0
