@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  chatbot:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/config.json
+
